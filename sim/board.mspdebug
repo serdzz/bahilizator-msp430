@@ -1,0 +1,55 @@
+# The board, as far as mspdebug's simulator can model it.
+#
+# Use with:  mspdebug sim "prog target/msp430-none-elf/release/bahilizator" \
+#                         "read sim/board.mspdebug" "reset" "step 12000000"
+#
+# Timer_B7 is the embassy-time driver's timer. The addresses match chip/f2618.rs and the two
+# interrupt numbers are where the F2618 vector table puts TIMERB0 (0xFFFA) and TIMERB1 (0xFFF8):
+# the simulator dispatches vector n from 0xFFE0 + n*2.
+simio add timer tb 7
+simio config tb base 0x180
+simio config tb type B
+simio config tb iv 0x11e
+simio config tb irq0 13
+simio config tb irq1 12
+
+# P1: the two indicator LEDs on P1.6 and P1.7, and the door switches on P1.3 and P1.4.
+# `verbose` prints every change to an output pin, which is how the LEDs are watched.
+simio add gpio p1
+simio config p1 base 0x20
+simio config p1 irq 2
+simio config p1 verbose
+simio config p1 set 3 1
+simio config p1 set 4 1
+
+# P2: the four front-panel buttons on P2.0 to P2.3, pulled up, so idle is high.
+simio add gpio p2
+simio config p2 base 0x28
+simio config p2 irq 3
+simio config p2 set 0 1
+simio config p2 set 1 1
+simio config p2 set 2 1
+simio config p2 set 3 1
+
+# P7: the coin acceptor's six channels, idle high.
+#
+# Only P7IN lands where the simulator's model expects it. The rest of this device's registers fall
+# on P8IN, P7OUT and P8OUT, because the F2618 interleaves ports 7 and 8 into word pairs and the
+# model assumes eight consecutive registers. Writes to them are harmless; what matters is that the
+# channels read as idle instead of reading zero and looking like six coins at once.
+simio add gpio p7
+simio config p7 base 0x38
+simio config p7 noirq
+simio config p7 set 0 1
+simio config p7 set 1 1
+simio config p7 set 2 1
+simio config p7 set 3 1
+simio config p7 set 4 1
+simio config p7 set 5 1
+simio config p7 set 6 1
+simio config p7 set 7 1
+
+# The factory DCO calibration constants, which a real chip has in information memory and a simulated
+# one does not. CALDCO_8MHZ then CALBC1_8MHZ. Without them clock::init refuses to start, which is
+# what it is supposed to do.
+mw 0x10fc 88 8d

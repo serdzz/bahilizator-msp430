@@ -1,0 +1,38 @@
+[package]
+name = "bahilizator"
+version = "2.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Shoe-cover dispenser firmware, on Embassy"
+
+[dependencies]
+embassy-msp430 = { path = "../embassy/embassy-msp430", features = ["msp430f2618", "time-driver-tb0"] }
+embassy-executor = { path = "../embassy/embassy-executor", features = ["platform-msp430", "executor-thread"] }
+embassy-time = { path = "../embassy/embassy-time", features = ["tick-hz-32_768"] }
+embassy-sync = { path = "../embassy/embassy-sync" }
+embassy-futures = { path = "../embassy/embassy-futures" }
+
+msp430-rt = "0.4.1"
+panic-msp430 = "0.4.0"
+critical-section = "1.1"
+heapless = "0.9"
+bitflags = { version = "2", default-features = false }
+static_cell = "2"
+
+# MSP430 has no atomics at all, so anything that wants one has to go through the critical-section
+# implementation this crate provides.
+portable-atomic = { version = "1", features = ["critical-section"] }
+
+[profile.dev]
+codegen-units = 1
+debug = 2
+# Only about 51 kB of the F2618's flash is reachable from Rust; never build this unoptimized.
+opt-level = "s"
+overflow-checks = false
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = true
+opt-level = "z"
+overflow-checks = false
