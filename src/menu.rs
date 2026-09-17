@@ -78,6 +78,9 @@ enum Item {
     Price,
     /// Zero the period counters.
     ClearPeriod,
+    /// Enrol or clear an iButton key — the equivalent of the C original's "Digital Keys"
+    /// (`EditDigitalKeys`, `bah_service.c:414-480`).
+    Keys,
 }
 
 #[cfg(feature = "hw")]
@@ -93,6 +96,7 @@ impl Item {
             Item::FreeItem => "Выдать бахилы",
             Item::Price => "Цена",
             Item::ClearPeriod => "Сброс периода",
+            Item::Keys => "Ключи доступа",
         }
     }
 
@@ -105,14 +109,20 @@ impl Item {
             Item::RefillItems | Item::RefillHopper(_) | Item::FreeItem | Item::ClearPeriod => {
                 Access::Service
             }
-            Item::Price => Access::Owner,
+            // The C original gates key enrolment at Technician level — one below most of Setup
+            // (`bah_service.c`, `Bahilizator.c:117`) — which the audit flagged as a security-
+            // relevant detail worth a second look (§6). This port gates it at Owner instead: a lost
+            // key is an operational-lockout risk either way, but minting new credentials that can
+            // themselves reach the menu is exactly the kind of privilege that should not be handed
+            // out at the same level as refilling a hopper.
+            Item::Price | Item::Keys => Access::Owner,
         }
     }
 }
 
 /// Every item, in the order they appear.
 #[cfg(feature = "hw")]
-const ITEMS: [Item; 8] = [
+const ITEMS: [Item; 9] = [
     Item::Accounting,
     Item::State,
     Item::RefillItems,
@@ -121,6 +131,7 @@ const ITEMS: [Item; 8] = [
     Item::FreeItem,
     Item::Price,
     Item::ClearPeriod,
+    Item::Keys,
 ];
 
 /// Wait for a button, or give up after the configured idle time.
@@ -140,6 +151,48 @@ async fn button(settings: &Settings) -> Option<Button> {
             Either::First(_) => {}
         }
     }
+}
+
+/// What happened while [`key_or_button`] was waiting.
+#[cfg(feature = "hw")]
+enum KeyOrButton {
+    /// A key was presented to the reader — known or not, the enrolment flow reads it either way.
+    Key(IbuttonKey),
+    /// A button was pressed.
+    Button(Button),
+    /// Nobody did anything for the configured idle time.
+    TimedOut,
+}
+
+/// Wait for a button *or* a key presented to the reader, whichever comes first.
+///
+/// Only [`run_item`]'s key-enrolment flow uses this — every other menu screen uses [`button`],
+/// which discards key events, because acting on a key mid-refill would be surprising. Enrolment is
+/// the one place a key arriving *is* the input being waited for.
+#[cfg(feature = "hw")]
+async fn key_or_button(settings: &Settings) -> KeyOrButton {
+    let limit = Duration::from_secs(settings.menu_exit_timeout as u64);
+    match select(crate::event::next(), Timer::after(limit)).await {
+        Either::Second(()) => KeyOrButton::TimedOut,
+        Either::First(Event::Button(b)) => KeyOrButton::Button(b),
+        Either::First(Event::Key(k)) => KeyOrButton::Key(k),
+        // A coin arriving here would be surprising too, but the acceptor is inhibited for the
+        // whole time the menu is open, so this should not happen; keep waiting rather than treat
+        // it as anything meaningful.
+        Either::First(_) => KeyOrButton::TimedOut,
+    }
+}
+
+/// Ask a yes/no question. `Ok` is yes, anything else — `Cancel`, another button, or the timeout —
+/// is no.
+#[cfg(feature = "hw")]
+async fn confirm(prompt: &str, settings: &Settings) -> bool {
+    let mut top = Row::new();
+    let _ = top.push_str(prompt);
+    let mut bottom = Row::new();
+    let _ = bottom.push_str("OK / Отмена");
+    crate::event::show(Screen::Text(top, bottom));
+    matches!(button(settings).await, Some(Button::Ok))
 }
 
 /// Show a report one screen at a time.
@@ -258,6 +311,77 @@ async fn run_item(machine: &mut Machine, item: Item) {
             machine.journal.save(&machine.counters);
         }
 
+        Item::Keys => enroll_key(machine).await,
+
+    }
+}
+
+/// Enrol a replacement key, or clear a slot.
+///
+/// The equivalent of the C original's `EditDigitalKeys`/`EditDigitalKey`
+/// (`bah_service.c:414-480`, `bah_dlgmsg.c:664-720`): step through the key slots one at a time,
+/// showing whether each is assigned, and on `Ok` wait for a key to be presented to the reader —
+/// known or not, since the whole point is to enrol one the machine does not yet recognise — then
+/// confirm before writing it into settings. `Cancel` on a slot clears it (after confirming), which
+/// covers the "physical key lost" case: an owner can walk up, clear the dead slot, and enrol its
+/// replacement in the same visit.
+///
+/// There is exactly one level of slots offered here, not three: this menu item itself requires
+/// [`Access::Owner`] (see [`Item::needs`]), and the C original's own access rule for
+/// `EditDigitalKeys` only lets somebody edit slots at *or below* their own level
+/// (`i / KEYS_PER_ACCESS_LEVEL >= aBah->current_access_level`, `bah_service.c:425-429`) — an owner
+/// in this port is the top of a 3-level, not 4-level, table (see `menu.rs::Access`), so an owner key
+/// can edit every slot, which this loop reflects by not filtering any of them out.
+#[cfg(feature = "hw")]
+async fn enroll_key(machine: &mut Machine) {
+    use crate::state::{IbuttonKey, KEYS_PER_LEVEL, KEY_ACCESS_LEVELS};
+
+    let mut i = 0usize;
+    loop {
+        let level = i / KEYS_PER_LEVEL;
+        let index = i % KEYS_PER_LEVEL;
+        let key = machine.settings.keys[level][index];
+
+        let mut top = Row::new();
+        let _ = write!(top, "{} {}", access_label(level), index + 1);
+        let mut bottom = Row::new();
+        let _ = bottom.push_str(if key.is_empty() { "(пусто)" } else { "занято" });
+        crate::event::show(Screen::Text(top, bottom));
+
+        match key_or_button(&machine.settings).await {
+            KeyOrButton::TimedOut => return,
+            KeyOrButton::Button(Button::Next) => {
+                i = (i + 1) % (KEY_ACCESS_LEVELS * KEYS_PER_LEVEL)
+            }
+            KeyOrButton::Button(Button::Prev) => {
+                i = (i + KEY_ACCESS_LEVELS * KEYS_PER_LEVEL - 1)
+                    % (KEY_ACCESS_LEVELS * KEYS_PER_LEVEL)
+            }
+            KeyOrButton::Button(Button::Cancel) => {
+                if !key.is_empty() && confirm("Очистить ключ?", &machine.settings).await {
+                    machine.settings.keys[level][index] = IbuttonKey::EMPTY;
+                    nvram::save_settings(&machine.settings);
+                }
+            }
+            KeyOrButton::Button(Button::Ok) => {}
+            KeyOrButton::Key(presented) => {
+                if confirm("Сохранить ключ?", &machine.settings).await {
+                    machine.settings.keys[level][index] = presented;
+                    nvram::save_settings(&machine.settings);
+                }
+            }
+        }
+    }
+}
+
+/// The label a key slot's access level gets on screen. Matches [`Access::of`]'s slot-to-level
+/// mapping: 0 is the most privileged.
+#[cfg(feature = "hw")]
+fn access_label(level: usize) -> &'static str {
+    match level {
+        0 => "Владелец",
+        1 => "Сервис",
+        _ => "Инкассатор",
     }
 }
 
@@ -269,7 +393,7 @@ pub async fn run(machine: &mut Machine, access: Access) {
     loop {
         // Items above the holder's access level are hidden rather than shown and refused. There is
         // nothing to be gained by telling a collector what they are not allowed to do.
-        let visible: heapless::Vec<Item, 8> = ITEMS
+        let visible: heapless::Vec<Item, 9> = ITEMS
             .iter()
             .copied()
             .filter(|i| i.needs() >= access)
