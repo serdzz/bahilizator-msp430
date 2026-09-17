@@ -79,6 +79,39 @@ impl IbuttonKey {
     }
 }
 
+/// One of the things worth remembering happened, for after-the-fact dispute resolution ("the
+/// machine took my coin and gave nothing") and field diagnosis of an intermittent fault — see
+/// [`crate::nvram::EventLog`] for where these are kept and PORT_AUDIT.md §9/§10 for what the C
+/// original's `EventLog`/`TransactionLog` (`bah_events.c`) did that this port previously had no
+/// equivalent of at all.
+///
+/// Deliberately smaller than the C original's `event_type_t`/`action_event_t` pair (`bah_events.h`)
+/// — no GSM/rent/date-time events, since none of those exist in this port — but covers the same
+/// money-critical ground: a coin taken, a unit paid out, a fault raised, and the service menu being
+/// opened, which is when settings and stock levels can change.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum EventKind {
+    /// A coin was accepted. `value` is the coin's worth in the smallest currency unit.
+    Coin,
+    /// A pair of covers was dispensed. `value` is 1 for a paid sale, 0 for a free one from the
+    /// service menu — encoding both in one kind rather than two keeps the log's per-entry format
+    /// simple; which it was is exactly what the audit meant by "enough detail to reconstruct a
+    /// dispute".
+    ItemDispensed,
+    /// A coin hopper paid out one unit. `value` is which hopper, by index into
+    /// [`crate::config::HOPPERS`].
+    HopperPayout,
+    /// A fault was raised. `value` is the raw [`crate::error::Errors`] bit that was set.
+    ErrorRaised,
+    /// A fault was cleared. `value` is the raw [`crate::error::Errors`] bit that was cleared.
+    ErrorCleared,
+    /// The service menu was entered. `value` is the access level, 0 = Owner, 1 = Service,
+    /// 2 = Collector — see [`crate::menu::Access`].
+    ServiceEntered,
+    /// The service menu was left.
+    ServiceExited,
+}
+
 /// How the coin acceptor is set up.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CoinAcceptorSettings {

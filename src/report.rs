@@ -10,12 +10,14 @@ use core::fmt::Write;
 use heapless::String;
 
 use crate::config::HOPPER_COUNT;
-use crate::state::{Accounting, Counters, Settings};
+use crate::nvram::{EventLog, EventLogEntry, EVENT_LOG_ENTRIES};
+use crate::state::{Accounting, Counters, EventKind, Settings};
 use crate::ui::{format_cash, Row};
 
-/// The longest a report gets. Sized to hold the accounting block with room to spare, and small
-/// enough that a copy on the stack is not a problem on a machine with eight kilobytes of RAM.
-pub const REPORT_LEN: usize = 256;
+/// The longest a report gets. Sized to hold the event log (up to `EVENT_LOG_ENTRIES` lines, the
+/// largest report this module produces) with room to spare, and small enough that a copy on the
+/// stack is not a problem on a machine with eight kilobytes of RAM.
+pub const REPORT_LEN: usize = 768;
 
 /// A whole report.
 pub type Report = String<REPORT_LEN>;
@@ -60,6 +62,86 @@ pub fn state(counters: &Counters, settings: &Settings) -> Report {
         let _ = writeln!(out, "ok");
     } else {
         let _ = writeln!(out, "err {:04x}", errors.bits());
+    }
+
+    out
+}
+
+/// The event log, newest entry last, for the "Логи" menu item.
+///
+/// This is the technician-facing view of [`EventLog`] — the equivalent of the C original's "View
+/// Events" (`Bahilizator.c`'s menu table, §6 of PORT_AUDIT.md), read through the same paged
+/// `show_report` mechanism every other report already uses (`menu.rs::show_report`). One line per
+/// entry, oldest first so a technician reading top-to-bottom sees the order things happened in;
+/// the newest entries are at the *end*, which on a paged display means paging forward reaches the
+/// most recent event last — the direction a story would be told in, not the direction most
+/// interesting to a hurried technician, but consistent with how the entries are actually stored
+/// and simplest to get right.
+pub fn events(log: &EventLog) -> Report {
+    let mut entries = [EventLogEntry {
+        seq: 0,
+        kind: EventKind::Coin,
+        value: 0,
+    }; EVENT_LOG_ENTRIES as usize];
+    let n = log.read_all(&mut entries);
+
+    let mut out = Report::new();
+    if n == 0 {
+        let _ = writeln!(out, "(пусто)");
+        return out;
+    }
+
+    for entry in &entries[..n] {
+        let line = match entry.kind {
+            EventKind::Coin => {
+                let mut cash = Row::new();
+                // No currency symbol here: the report has no `Settings` to hand, and the raw
+                // smallest-unit value is unambiguous enough for a technician cross-checking against
+                // a specific coin's denomination.
+                let _ = write!(cash, "{}", entry.value);
+                cash
+            }
+            EventKind::ItemDispensed => {
+                let mut r = Row::new();
+                let _ = r.push_str(if entry.value != 0 { "paid" } else { "free" });
+                r
+            }
+            EventKind::HopperPayout => {
+                let mut r = Row::new();
+                let _ = write!(r, "#{}", entry.value + 1);
+                r
+            }
+            EventKind::ErrorRaised | EventKind::ErrorCleared => {
+                let mut r = Row::new();
+                let _ = write!(r, "{:08x}", entry.value);
+                r
+            }
+            EventKind::ServiceEntered => {
+                let mut r = Row::new();
+                let _ = write!(
+                    r,
+                    "{}",
+                    match entry.value {
+                        0 => "owner",
+                        1 => "service",
+                        _ => "collector",
+                    }
+                );
+                r
+            }
+            EventKind::ServiceExited => Row::new(),
+        };
+
+        let kind = match entry.kind {
+            EventKind::Coin => "coin",
+            EventKind::ItemDispensed => "item",
+            EventKind::HopperPayout => "payout",
+            EventKind::ErrorRaised => "err+",
+            EventKind::ErrorCleared => "err-",
+            EventKind::ServiceEntered => "menu>",
+            EventKind::ServiceExited => "menu<",
+        };
+        let _ = writeln!(out, "{} {} {}", entry.seq, kind, line);
     }
 
     out

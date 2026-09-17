@@ -70,6 +70,9 @@ enum Item {
     /// Enrol or clear an iButton key — the equivalent of the C original's "Digital Keys"
     /// (`EditDigitalKeys`, `bah_service.c:414-480`).
     Keys,
+    /// Show the persisted event log — the equivalent of the C original's "View Events"
+    /// (`Bahilizator.c`'s menu table, §6/§9 of PORT_AUDIT.md).
+    EventLog,
 }
 
 impl Item {
@@ -85,6 +88,7 @@ impl Item {
             Item::Price => "Цена",
             Item::ClearPeriod => "Сброс периода",
             Item::Keys => "Ключи доступа",
+            Item::EventLog => "Журнал событий",
         }
     }
 
@@ -93,7 +97,7 @@ impl Item {
     /// Ordered so that a collector, who only empties the cashbox, cannot change a price.
     fn needs(self) -> Access {
         match self {
-            Item::Accounting | Item::State => Access::Collector,
+            Item::Accounting | Item::State | Item::EventLog => Access::Collector,
             Item::RefillItems | Item::RefillHopper(_) | Item::FreeItem | Item::ClearPeriod => {
                 Access::Service
             }
@@ -109,7 +113,7 @@ impl Item {
 }
 
 /// Every item, in the order they appear.
-const ITEMS: [Item; 9] = [
+const ITEMS: [Item; 10] = [
     Item::Accounting,
     Item::State,
     Item::RefillItems,
@@ -119,6 +123,7 @@ const ITEMS: [Item; 9] = [
     Item::Price,
     Item::ClearPeriod,
     Item::Keys,
+    Item::EventLog,
 ];
 
 /// Wait for a button, or give up after the configured idle time.
@@ -293,6 +298,11 @@ async fn run_item(machine: &mut Machine, item: Item) {
 
         Item::Keys => enroll_key(machine).await,
 
+        Item::EventLog => {
+            let text = report::events(&machine.events);
+            show_report(&text, &machine.settings).await;
+        }
+
     }
 }
 
@@ -370,7 +380,7 @@ pub async fn run(machine: &mut Machine, access: Access) {
     loop {
         // Items above the holder's access level are hidden rather than shown and refused. There is
         // nothing to be gained by telling a collector what they are not allowed to do.
-        let visible: heapless::Vec<Item, 9> = ITEMS
+        let visible: heapless::Vec<Item, 10> = ITEMS
             .iter()
             .copied()
             .filter(|i| i.needs() >= access)

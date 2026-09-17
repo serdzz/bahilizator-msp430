@@ -16,13 +16,13 @@
 //! interrupted by the power going off leaves a half-written record that fails its checksum, and the
 //! previous record — still intact, because nothing overwrote it — is what comes back.
 
+use crate::config::{COIN_CHANNELS, HOPPER_COUNT};
 use crate::error::{self, Errors};
 use crate::state::{
-    Accounting, AppState, Cash, CoinAcceptorSettings, Counters, Currency, HopperSettings,
-    IbuttonKey, Language, Level, Settings, COUNTERS_VERSION, KEYS_PER_LEVEL, KEY_ACCESS_LEVELS,
-    SETTINGS_VERSION,
+    Accounting, AppState, Cash, CoinAcceptorSettings, Counters, Currency, EventKind,
+    HopperSettings, IbuttonKey, Language, Level, Settings, COUNTERS_VERSION, KEYS_PER_LEVEL,
+    KEY_ACCESS_LEVELS, SETTINGS_VERSION,
 };
-use crate::config::{COIN_CHANNELS, HOPPER_COUNT};
 
 /// Flash segment size on this device.
 const SEGMENT: u16 = 512;
@@ -36,6 +36,9 @@ const SETTINGS_SEGMENT: u16 = NVRAM_BASE;
 /// Where the counter journal starts, and how many segments it spans.
 const JOURNAL_BASE: u16 = NVRAM_BASE + SEGMENT;
 const JOURNAL_SEGMENTS: u16 = 3;
+
+/// The segment the event log lives in — one segment, after the counter journal.
+const EVENT_LOG_SEGMENT: u16 = JOURNAL_BASE + JOURNAL_SEGMENTS * SEGMENT;
 
 /// One journal record, padded so that records never straddle a segment boundary.
 const RECORD: u16 = 64;
@@ -596,3 +599,217 @@ pub fn load_settings() -> Settings {
 
 /// A compile-time check that the level in `Level` is what the record layout assumed.
 const _: () = assert!(core::mem::size_of::<Level>() == 2);
+
+// ---------------------------------------------------------------------------------------------
+// Event log
+//
+// A small ring buffer of the last few things that happened, persisted in its own flash segment so
+// a technician can reconstruct a dispute ("the machine took my coin and gave nothing") after the
+// fact, or spot an intermittent fault the live `Errors` bitset (error.rs) has since cleared. This
+// is the port's equivalent of the C original's `EventLog`/`TransactionLog` (`bah_events.c`,
+// PORT_AUDIT.md §9/§10), which the port previously had no data structure for at all — only the
+// live fault bitset and the aggregate accounting counters were kept.
+//
+// Read through the service menu the same way the accounting/state reports are: `report::events()`
+// builds a paged `Report`, shown by `menu.rs::show_report` exactly like `Item::Accounting`. See
+// `Item::EventLog` in `menu.rs`.
+// ---------------------------------------------------------------------------------------------
+
+/// How many entries the log holds. One segment of 512 bytes at 16 bytes/entry fits 32; that is a
+/// few days of a busy machine's traffic, which is enough to catch a dispute raised soon after it
+/// happened without needing a second segment.
+pub const EVENT_LOG_ENTRIES: u16 = SEGMENT / EVENT_RECORD;
+
+/// One event-log entry's size on flash: 2 bytes sequence, 1 byte kind, 4 bytes value, 1 byte
+/// padding, 2 bytes CRC = 10, rounded up to 16 so entries land on a convenient boundary and there
+/// is headroom to widen `value` later without a layout version bump.
+const EVENT_RECORD: u16 = 16;
+
+/// One thing the event log remembers.
+///
+/// There is no RTC on this board (see `ibutton.rs`'s and `cyrillic.rs`'s module docs on why several
+/// other features are absent for the same reason), so entries are ordered by a monotonic sequence
+/// number rather than a wall-clock timestamp — "the 401st thing that happened" rather than "at
+/// 14:32" — which is enough to reconstruct the *order* of events around a dispute even though it
+/// cannot give a technician a clock time without cross-referencing something else (a receipt, a
+/// phone).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct EventLogEntry {
+    /// Monotonically increasing across the whole log's life. Wraps like the counter journal's
+    /// sequence number does, and is compared the same wrapped way.
+    pub seq: u16,
+    /// What happened.
+    pub kind: EventKind,
+    /// The detail that goes with `kind` — see [`EventKind`]'s variants for what this means for
+    /// each one.
+    pub value: u32,
+}
+
+fn encode_event(entry: &EventLogEntry, out: &mut [u8; EVENT_RECORD as usize]) {
+    out.fill(0xff);
+    let mut cur = Cursor::new(out);
+    cur.u16(entry.seq);
+    let kind = match entry.kind {
+        EventKind::Coin => 0u8,
+        EventKind::ItemDispensed => 1,
+        EventKind::HopperPayout => 2,
+        EventKind::ErrorRaised => 3,
+        EventKind::ErrorCleared => 4,
+        EventKind::ServiceEntered => 5,
+        EventKind::ServiceExited => 6,
+    };
+    cur.u8(kind);
+    cur.u32(entry.value);
+
+    let end = cur.at;
+    let crc = crc16(&out[..end]);
+    out[end..end + 2].copy_from_slice(&crc.to_le_bytes());
+}
+
+fn decode_event(bytes: &[u8; EVENT_RECORD as usize]) -> Option<EventLogEntry> {
+    if bytes.iter().all(|&b| b == 0xff) {
+        return None;
+    }
+
+    let mut r = Reader::new(bytes);
+    let seq = r.u16();
+    let kind = match r.u8() {
+        0 => EventKind::Coin,
+        1 => EventKind::ItemDispensed,
+        2 => EventKind::HopperPayout,
+        3 => EventKind::ErrorRaised,
+        4 => EventKind::ErrorCleared,
+        5 => EventKind::ServiceEntered,
+        6 => EventKind::ServiceExited,
+        _ => return None,
+    };
+    let value = r.u32();
+
+    let end = r.at;
+    let stored = u16::from_le_bytes([bytes[end], bytes[end + 1]]);
+    if crc16(&bytes[..end]) != stored {
+        return None;
+    }
+
+    Some(EventLogEntry { seq, kind, value })
+}
+
+/// The event log: where the newest entry is, and where the next one goes.
+///
+/// Modelled on [`Journal`] — append-only within one segment, oldest entries silently lost once the
+/// segment fills and wraps — but simpler, because there is only one segment: losing the oldest
+/// event once 32 have happened since is an acceptable trade for not needing a second segment on a
+/// device this flash-constrained, and the log is diagnostic aid, not the money-critical counters
+/// [`Journal`] exists to protect.
+pub struct EventLog {
+    /// Slot the last entry was written to, or `EVENT_LOG_ENTRIES` if the log has never been
+    /// written and the segment needs erasing before the first write.
+    slot: u16,
+    /// Sequence number of the last entry written.
+    seq: u16,
+}
+
+impl EventLog {
+    fn slot_addr(slot: u16) -> u16 {
+        EVENT_LOG_SEGMENT + slot * EVENT_RECORD
+    }
+
+    /// Find the newest entry, if any, so appends continue the sequence rather than restart it.
+    pub fn open() -> Self {
+        let mut best: Option<(u16, u16)> = None;
+
+        for slot in 0..EVENT_LOG_ENTRIES {
+            let mut bytes = [0u8; EVENT_RECORD as usize];
+            read_bytes(Self::slot_addr(slot), &mut bytes);
+            let Some(entry) = decode_event(&bytes) else {
+                continue;
+            };
+            let newer = match &best {
+                None => true,
+                Some((best_seq, _)) => entry.seq.wrapping_sub(*best_seq) < 0x8000,
+            };
+            if newer {
+                best = Some((entry.seq, slot));
+            }
+        }
+
+        match best {
+            Some((seq, slot)) => Self { slot, seq },
+            None => Self {
+                slot: EVENT_LOG_ENTRIES - 1,
+                seq: 0,
+            },
+        }
+    }
+
+    /// Append one entry.
+    ///
+    /// Erases the segment before the very first write a machine ever makes to it (an all-`0xff`
+    /// segment cannot be written into without erasing first), and otherwise never erases — flash
+    /// can only clear bits, so each new entry lands on a slot that is either genuinely blank
+    /// (never written since the last erase) or about to be overwritten as part of a full-segment
+    /// erase when the write wraps back to slot 0.
+    pub fn record(&mut self, kind: EventKind, value: u32) {
+        let next = if self.slot + 1 >= EVENT_LOG_ENTRIES {
+            0
+        } else {
+            self.slot + 1
+        };
+
+        // Wrapping back to the start of the segment is when the old entries in the rest of the
+        // segment would otherwise linger unreadable-but-not-blank; erase the whole segment once,
+        // here, rather than track which slots are stale. This also covers the very first write a
+        // machine ever makes: `open()` leaves `slot` at `EVENT_LOG_ENTRIES - 1` when nothing
+        // readable was found, so `next` is 0 on that first call too.
+        if next == 0 {
+            erase_segment(EVENT_LOG_SEGMENT);
+        }
+
+        let seq = self.seq.wrapping_add(1);
+        let entry = EventLogEntry { seq, kind, value };
+        let mut bytes = [0u8; EVENT_RECORD as usize];
+        encode_event(&entry, &mut bytes);
+        write_bytes(Self::slot_addr(next), &bytes);
+
+        self.slot = next;
+        self.seq = seq;
+    }
+
+    /// Read every live entry back, oldest first.
+    ///
+    /// `out` is filled left-to-right; entries beyond its length are silently dropped, which only
+    /// happens if a caller asks for fewer than [`EVENT_LOG_ENTRIES`] — `report::events` does not.
+    pub fn read_all(&self, out: &mut [EventLogEntry]) -> usize {
+        let mut entries: heapless::Vec<EventLogEntry, 32> = heapless::Vec::new();
+
+        for slot in 0..EVENT_LOG_ENTRIES {
+            let mut bytes = [0u8; EVENT_RECORD as usize];
+            read_bytes(Self::slot_addr(slot), &mut bytes);
+            if let Some(entry) = decode_event(&bytes) {
+                let _ = entries.push(entry);
+            }
+        }
+
+        // Oldest first: sort by sequence number, wrap-aware in the same way `Journal::open` picks
+        // the newest record, but here every live entry matters, not just the latest.
+        entries.sort_unstable_by(|a, b| {
+            let relative_to_a = b.seq.wrapping_sub(a.seq);
+            if relative_to_a == 0 {
+                core::cmp::Ordering::Equal
+            } else if relative_to_a < 0x8000 {
+                core::cmp::Ordering::Less
+            } else {
+                core::cmp::Ordering::Greater
+            }
+        });
+
+        let n = entries.len().min(out.len());
+        out[..n].copy_from_slice(&entries[..n]);
+        n
+    }
+}
+
+/// A compile-time check that one event-log segment holds a whole number of records with room to
+/// spare, so [`EventLog::record`]'s wrap-at-zero logic never has to straddle a segment boundary.
+const _: () = assert!(SEGMENT % EVENT_RECORD == 0);
+const _: () = assert!(EVENT_LOG_ENTRIES as usize <= 32);
