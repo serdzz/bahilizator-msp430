@@ -40,6 +40,31 @@ const PULSE_MIN_MS: u64 = 10;
 /// dead acceptor, and counting one coin per poll for as long as it lasted would be a gift.
 const PULSE_MAX_MS: u64 = 1_000;
 
+// ---------------------------------------------------------------------------------------------
+// Pulse mode
+//
+// A second, mutually exclusive acceptor protocol, selected at runtime by
+// `CoinAcceptorSettings::pulse_mode` (see `state.rs`) — the same field the C original toggles at
+// `bah_settings.c`/`SetCoinAcceptorPulseMode`. Instead of one of six parallel lines carrying a coin,
+// all six lines are OR-ed together and the coin's *value* is the number of pulses in one burst: the
+// Nth configured denomination is signalled by N pulses, separated by less than
+// `PULSE_INTER_MAX_MS` from one another, so that a run of pulses can be told apart from two separate
+// coins arriving close together.
+//
+// The four timing constants below are taken directly from the C original's
+// `coin_acceptor.h` (`COIN_ACCEPTOR_PULSE_MIN/MAX`, `COIN_ACCEPTOR_INTER_PULSE_MAX`), which are 1 ms
+// system ticks there (`timer.c`) just as they are milliseconds here — no unit conversion needed.
+// ---------------------------------------------------------------------------------------------
+
+/// Shortest a single pulse may be to count as a pulse rather than noise. `COIN_ACCEPTOR_PULSE_MIN`.
+const PULSE_MODE_PULSE_MIN_MS: u64 = 20;
+/// Longest a single pulse may be before the burst is abandoned as a malfunction.
+/// `COIN_ACCEPTOR_PULSE_MAX`.
+const PULSE_MODE_PULSE_MAX_MS: u64 = 250;
+/// How long the line may sit released between pulses of the same burst before the burst is taken
+/// to have ended and the accumulated pulse count reported as a coin. `COIN_ACCEPTOR_INTER_PULSE_MAX`.
+const PULSE_MODE_INTER_PULSE_MAX_MS: u64 = 200;
+
 /// The lines the acceptor is wired to.
 pub struct CoinAcceptor<'d> {
     /// One per channel, in channel order. Active low.
@@ -97,22 +122,39 @@ pub async fn coin_task(
     events: EventSender,
 ) {
     acceptor.set_enabled(settings.enabled);
+    let mut enabled = settings.enabled;
 
+    if settings.pulse_mode {
+        run_pulse_mode(&mut acceptor, &settings, &events, &mut enabled).await;
+    } else {
+        run_parallel_mode(&mut acceptor, &settings, &events, &mut enabled).await;
+    }
+}
+
+/// Update whether the acceptor is allowed to take money, from the same conditions both modes use.
+fn update_enabled(acceptor: &mut CoinAcceptor<'static>, settings: &CoinAcceptorSettings, enabled: &mut bool) {
+    let wanted = settings.enabled
+        && !INHIBITED.load(core::sync::atomic::Ordering::Relaxed)
+        && error::errors().can_vend();
+    if wanted != *enabled {
+        acceptor.set_enabled(wanted);
+        *enabled = wanted;
+    }
+}
+
+/// One line per channel, matching the C original's `processNormalMode` (`coin_acceptor.c:37-82`).
+async fn run_parallel_mode(
+    acceptor: &mut CoinAcceptor<'static>,
+    settings: &CoinAcceptorSettings,
+    events: &EventSender,
+    enabled: &mut bool,
+) -> ! {
     let mut pulses = [Pulse::Idle; COIN_CHANNELS];
     let mut ticker = Ticker::every(Duration::from_millis(POLL_MS));
 
-    let mut enabled = settings.enabled;
-
     loop {
         ticker.next().await;
-
-        let wanted = settings.enabled
-            && !INHIBITED.load(core::sync::atomic::Ordering::Relaxed)
-            && error::errors().can_vend();
-        if wanted != enabled {
-            acceptor.set_enabled(wanted);
-            enabled = wanted;
-        }
+        update_enabled(acceptor, settings, enabled);
 
         let now = Instant::now();
         let mut any_stuck = false;
@@ -157,5 +199,112 @@ pub async fn coin_task(
         }
 
         error::set(Errors::COIN_ACCEPTOR, any_stuck);
+    }
+}
+
+/// Where a pulse-mode burst currently is.
+///
+/// Mirrors the C original's `coin_process_stage` (`ACCEPTOR_IDLE`/`ACCEPTOR_ACCEPT`/
+/// `ACCEPTOR_POST_ACCEPT`, `coin_acceptor.c:84-132`) — there is no `ACCEPTOR_PRE_ACCEPT` here because
+/// that stage belongs only to the parallel-channel state machine.
+enum PulseModeStage {
+    /// Waiting for the burst to start.
+    Idle,
+    /// A pulse is in progress; waiting to see whether it is real or noise.
+    Pulsing {
+        /// When the line went active for this pulse.
+        since: Instant,
+    },
+    /// Between pulses of the same burst, waiting to see whether another pulse follows or the burst
+    /// has ended.
+    Gap {
+        /// When the line released.
+        since: Instant,
+        /// Pulses counted in this burst so far.
+        count: u8,
+    },
+}
+
+/// All six lines OR-ed together, matching the C original's `COIN_ACCEPTOR_ANY_CH_LO/HI_STATE`.
+fn any_channel_low(acceptor: &CoinAcceptor<'static>) -> bool {
+    acceptor.channels.iter().any(|c| c.is_low())
+}
+
+/// Pulse counting on one shared line, matching the C original's `processPulseMode`
+/// (`coin_acceptor.c:84-132`). `N` pulses in one burst is the `N`th configured denomination —
+/// `channel_values[pulse_count - 1]` here, where the C original returns the bitmask `1<<(N-1)` for
+/// `ProcessCoinAcceptor` (`bah_io.c:1173-1196`) to turn back into a channel index; doing the
+/// subtraction once here is equivalent and avoids reintroducing that indirection.
+async fn run_pulse_mode(
+    acceptor: &mut CoinAcceptor<'static>,
+    settings: &CoinAcceptorSettings,
+    events: &EventSender,
+    enabled: &mut bool,
+) -> ! {
+    let mut stage = PulseModeStage::Idle;
+    let mut ticker = Ticker::every(Duration::from_millis(POLL_MS));
+
+    loop {
+        ticker.next().await;
+        update_enabled(acceptor, settings, enabled);
+
+        let now = Instant::now();
+        let active = any_channel_low(acceptor);
+        let mut malfunction = false;
+
+        stage = match stage {
+            PulseModeStage::Idle => {
+                if active {
+                    PulseModeStage::Pulsing { since: now }
+                } else {
+                    PulseModeStage::Idle
+                }
+            }
+            PulseModeStage::Pulsing { since } => {
+                if active {
+                    // Still pulsing. A pulse held longer than the maximum is a malfunction, exactly
+                    // as the C original treats it (`coin_acceptor.c:101-107`).
+                    if (now - since).as_millis() > PULSE_MODE_PULSE_MAX_MS {
+                        malfunction = true;
+                        PulseModeStage::Idle
+                    } else {
+                        PulseModeStage::Pulsing { since }
+                    }
+                } else {
+                    // The line released. A pulse shorter than the minimum is also a malfunction —
+                    // the C original checks both bounds before accepting a pulse
+                    // (`coin_acceptor.c:95-96`).
+                    let held = (now - since).as_millis();
+                    if held < PULSE_MODE_PULSE_MIN_MS {
+                        malfunction = true;
+                        PulseModeStage::Idle
+                    } else {
+                        PulseModeStage::Gap { since: now, count: 1 }
+                    }
+                }
+            }
+            PulseModeStage::Gap { since, count } => {
+                if active {
+                    // Another pulse in the same burst has started.
+                    PulseModeStage::Pulsing { since: now }
+                } else if (now - since).as_millis() >= PULSE_MODE_INTER_PULSE_MAX_MS {
+                    // The gap has run out: the burst is over. Report the coin the pulse count names,
+                    // if the settings believe in that many channels and the channel is not masked
+                    // off — the same channel-mask check the parallel path applies.
+                    let index = (count - 1) as usize;
+                    if index < COIN_CHANNELS && settings.channel_mask & (1 << index) != 0 {
+                        let _ = events.try_send(Event::Coin {
+                            channel: index as u8,
+                            value: settings.channel_values[index],
+                        });
+                    }
+                    PulseModeStage::Idle
+                } else {
+                    PulseModeStage::Gap { since, count }
+                }
+            }
+        };
+
+        error::set(Errors::COIN_ACCEPTOR, malfunction);
     }
 }

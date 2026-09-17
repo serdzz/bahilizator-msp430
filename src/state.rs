@@ -88,6 +88,17 @@ pub struct CoinAcceptorSettings {
     pub channel_mask: u8,
     /// What a coin on each channel is worth.
     pub channel_values: [Cash; COIN_CHANNELS],
+    /// Whether the acceptor reports coins as a pulse count on one shared line rather than as one
+    /// of six parallel channel lines.
+    ///
+    /// This mirrors the C original's `settings.coin_acceptor.pulse_mode`
+    /// (`bah_settings.c`, `SetCoinAcceptorPulseMode`) — a per-machine, runtime-configurable choice
+    /// of acceptor protocol, not a build-time flag. An acceptor wired for pulse signalling sends
+    /// `N` pulses, all six lines OR-ed together, for its `N`th configured denomination; one wired
+    /// for parallel signalling drives exactly one of the six lines per coin. Both protocols use the
+    /// same six physical lines, so switching this setting is enough to support either without
+    /// rewiring.
+    pub pulse_mode: bool,
 }
 
 impl Default for CoinAcceptorSettings {
@@ -97,6 +108,7 @@ impl Default for CoinAcceptorSettings {
             channel_mask: 0x3f,
             // Ten roubles down to fifty kopecks, which is the coin set the machines were sold with.
             channel_values: [1000, 500, 200, 100, 50, 0],
+            pulse_mode: false,
         }
     }
 }
