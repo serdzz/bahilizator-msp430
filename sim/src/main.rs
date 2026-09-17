@@ -709,15 +709,19 @@ fn draw(
     let (top, bottom) = ui::render(fallback, Language::Russian);
     *shown = Some((top.clone(), bottom.clone()));
 
+    // In raw mode the terminal does NOT translate '\n' into a carriage return, so a bare
+    // '\n' just moves the cursor down one row without returning to column 0 — every
+    // subsequent line drifts further right ("staircasing"). Every line end must be an
+    // explicit "\r\n", and writeln!/println! must not be used here.
     write!(out, "\x1b[H")?; // cursor home, keep scrollback intact
-    writeln!(out, "  ,{}.", "-".repeat(config::LCD_COLUMNS + 2))?;
-    writeln!(out, "  |{:col$}|", pad(&top), col = config::LCD_COLUMNS + 2)?;
-    writeln!(out, "  |{:col$}|", pad(&bottom), col = config::LCD_COLUMNS + 2)?;
-    writeln!(out, "  `{}'", "-".repeat(config::LCD_COLUMNS + 2))?;
-    writeln!(out)?;
-    writeln!(
+    write!(out, "  ,{}.\r\n", "-".repeat(config::LCD_COLUMNS + 2))?;
+    write!(out, "  |{:col$}|\r\n", pad(&top), col = config::LCD_COLUMNS + 2)?;
+    write!(out, "  |{:col$}|\r\n", pad(&bottom), col = config::LCD_COLUMNS + 2)?;
+    write!(out, "  `{}'\r\n", "-".repeat(config::LCD_COLUMNS + 2))?;
+    write!(out, "\r\n")?;
+    write!(
         out,
-        "  Cash: {:>6} kop.   Price: {:>6} kop.   Items left: {:>4}   Errors: {:?}\x1b[K",
+        "  Cash: {:>6} kop.   Price: {:>6} kop.   Items left: {:>4}   Errors: {:?}\x1b[K\r\n",
         machine.counters.cash,
         machine.settings.item_dispenser.unit_value,
         machine.counters.item_level,
@@ -730,16 +734,16 @@ fn draw(
         .enumerate()
         .map(|(i, l)| format!("hopper{}={}", i + 1, l))
         .collect();
-    writeln!(out, "  Coin hoppers: {}\x1b[K", coin_levels.join(", "))?;
-    writeln!(out)?;
-    writeln!(out, "  ←/→/Enter/\\=buttons  o/s/c=iButton  1-6=coins  A/S=hopper  D=dispenser  h=help  q=quit\x1b[K")?;
-    writeln!(out, "  ---- log ----\x1b[K")?;
+    write!(out, "  Coin hoppers: {}\x1b[K\r\n", coin_levels.join(", "))?;
+    write!(out, "\r\n")?;
+    write!(out, "  \u{2190}/\u{2192}/Enter/\\=buttons  o/s/c=iButton  1-6=coins  A/S=hopper  D=dispenser  h=help  q=quit\x1b[K\r\n")?;
+    write!(out, "  ---- log ----\x1b[K\r\n")?;
     let tail: Vec<&String> = machine.log.iter().rev().take(8).collect();
     for line in tail.iter().rev() {
-        writeln!(out, "  {}\x1b[K", line)?;
+        write!(out, "  {}\x1b[K\r\n", line)?;
     }
     for _ in tail.len()..8 {
-        writeln!(out, "\x1b[K")?;
+        write!(out, "\x1b[K\r\n")?;
     }
     write!(out, "\x1b[J")?; // clear anything left over from a longer previous frame
     out.flush()?;
