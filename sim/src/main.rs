@@ -385,7 +385,9 @@ fn run_loop(
             KeyCode::Left => handle_button(machine, mode, Button::Prev, &mut popup),
             KeyCode::Right => handle_button(machine, mode, Button::Next, &mut popup),
             KeyCode::Enter => handle_button(machine, mode, Button::Ok, &mut popup),
-            KeyCode::Char('\\') => handle_button(machine, mode, Button::Cancel, &mut popup),
+            KeyCode::Char('\\') | KeyCode::Delete => {
+                handle_button(machine, mode, Button::Cancel, &mut popup)
+            }
 
             // --- Coin acceptor, channels 1-6 -------------------------------------------------
             KeyCode::Char(c @ '1'..='6') => {
@@ -736,7 +738,7 @@ fn draw(
         .collect();
     write!(out, "  Coin hoppers: {}\x1b[K\r\n", coin_levels.join(", "))?;
     write!(out, "\r\n")?;
-    write!(out, "  \u{2190}/\u{2192}/Enter/\\=buttons  o/s/c=iButton  1-6=coins  A/S=hopper  D=dispenser  h=help  q=quit\x1b[K\r\n")?;
+    write!(out, "  \u{2190}/\u{2192}/Enter/\\ или Delete=buttons  o/s/c=iButton  1-6=coins  A/S=hopper  D=dispenser  h=help  q=quit\x1b[K\r\n")?;
     write!(out, "  ---- log ----\x1b[K\r\n")?;
     let tail: Vec<&String> = machine.log.iter().rev().take(8).collect();
     for line in tail.iter().rev() {
