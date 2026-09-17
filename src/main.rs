@@ -28,7 +28,7 @@
 #![warn(missing_docs)]
 
 use bahilizator::config::{self, HopperPins};
-use bahilizator::hopper::Hopper;
+use bahilizator::hopper::{Hopper, HopperKind};
 use bahilizator::{buttons, coin_acceptor, error, event, ibutton, lcd, state, ui, vending};
 use embassy_executor::Executor;
 use embassy_msp430::clock::{AclkSource, DcoFreq, Div};
@@ -44,7 +44,7 @@ use panic_msp430 as _;
 /// described by [`HopperPins`] — a table read at runtime — and the singletons are distinct types
 /// known at compile time. The safety argument is the table itself: every pin in `config` appears
 /// in exactly one place, and nothing else in this firmware claims one.
-fn hopper_from(pins: HopperPins) -> Hopper<'static> {
+fn hopper_from(pins: HopperPins, kind: HopperKind) -> Hopper<'static> {
     // SAFETY: `config` assigns each of these pins to this hopper and to nothing else, and this
     // function is called once per hopper from `main` before any task starts.
     unsafe {
@@ -53,6 +53,7 @@ fn hopper_from(pins: HopperPins) -> Hopper<'static> {
             Input::new(gpio::AnyPin::steal(pins.port, pins.coin), Pull::Up),
             Input::new(gpio::AnyPin::steal(pins.port, pins.error), Pull::Up),
             Input::new(gpio::AnyPin::steal(pins.port, pins.level), Pull::Up),
+            kind,
         )
     }
 }
@@ -116,9 +117,9 @@ fn main() -> ! {
         Output::new(p.P7_1, Level::High),
     );
 
-    let dispenser = hopper_from(config::ITEM_DISPENSER);
+    let dispenser = hopper_from(config::ITEM_DISPENSER, HopperKind::ItemDispenser);
     let hoppers: [Hopper<'static>; config::HOPPER_COUNT] =
-        core::array::from_fn(|i| hopper_from(config::HOPPERS[i]));
+        core::array::from_fn(|i| hopper_from(config::HOPPERS[i], HopperKind::CoinHopper));
 
     // The indicators. Green means the machine will sell; red means it will not.
     let leds = (
