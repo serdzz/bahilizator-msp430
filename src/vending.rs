@@ -15,8 +15,8 @@ use crate::config::HOPPER_COUNT;
 use crate::error::{self, Errors};
 use crate::event::{Button, Event};
 use crate::hopper::{Hopper, HopperError};
-use crate::nvram::{self, Journal};
-use crate::state::{AppState, Cash, Counters, Settings};
+use crate::nvram::{self, EventLog, Journal};
+use crate::state::{AppState, Cash, Counters, EventKind, Settings};
 use crate::ui::{self, Screen};
 
 /// Everything the sale needs, in one place so the state machine can be written as functions on it
@@ -28,6 +28,9 @@ pub struct Machine {
     pub counters: Counters,
     /// Where the counters are persisted.
     pub journal: Journal,
+    /// The last few things that happened, persisted across a power cut — see
+    /// `nvram.rs`'s "Event log" section and PORT_AUDIT.md §9/§10.
+    pub events: EventLog,
     /// Coin hoppers, in the order the settings list them.
     pub hoppers: [Hopper<'static>; HOPPER_COUNT],
     /// The shoe-cover dispenser.
@@ -72,6 +75,7 @@ impl Machine {
         self.counters.cash = self.counters.cash.saturating_add(value);
         self.counters.overall.cash_in = self.counters.overall.cash_in.saturating_add(value);
         self.counters.period.cash_in = self.counters.period.cash_in.saturating_add(value);
+        self.events.record(EventKind::Coin, value);
         self.persist();
         self.refresh_display();
     }
@@ -134,11 +138,18 @@ impl Machine {
                     self.counters.period.items_dispensed += 1;
                 }
                 self.counters.item_level = self.counters.item_level.saturating_sub(1);
+                self.events
+                    .record(EventKind::ItemDispensed, if free { 0 } else { 1 });
                 self.persist();
             }
 
             if let Some(e) = failure {
                 // A dispenser that will not dispense stops the machine: there is nothing to sell.
+                let code = match e {
+                    HopperError::Jammed => 0xffff_ffffu32,
+                    HopperError::Faulted { code } => code as u32,
+                };
+                self.events.record(EventKind::ErrorRaised, code);
                 error::raise(match e {
                     HopperError::Jammed => Errors::ITEM_DISPENSER,
                     HopperError::Faulted { .. } => Errors::ITEM_DISPENSER,
@@ -175,13 +186,19 @@ impl Machine {
                         self.counters.overall.cash_out.saturating_add(value);
                     self.counters.period.cash_out =
                         self.counters.period.cash_out.saturating_add(value);
+                    self.events.record(EventKind::HopperPayout, i as u32);
                     self.persist();
                 }
 
-                if failure.is_some() {
+                if let Some(e) = failure {
                     // A hopper that cannot pay is a fault, but not one that stops the machine
                     // selling: it can still take exact money. What it must not do is quietly forget
                     // the coins it still owes, so they stay pending.
+                    let code = match e {
+                        HopperError::Jammed => 0xffff_ffffu32,
+                        HopperError::Faulted { code } => code as u32,
+                    };
+                    self.events.record(EventKind::ErrorRaised, code);
                     error::raise(Errors::COIN_HOPPER);
                     self.persist();
                     return;
@@ -352,7 +369,16 @@ async fn handle(machine: &mut Machine, event: Event) {
                     // The acceptor is shut for the whole visit, so that a coin cannot arrive in the
                     // middle of a refill and be counted against a level the engineer is editing.
                     crate::coin_acceptor::set_inhibited(true);
+                    let access_level = match access {
+                        crate::menu::Access::Owner => 0u32,
+                        crate::menu::Access::Service => 1,
+                        crate::menu::Access::Collector => 2,
+                    };
+                    machine
+                        .events
+                        .record(EventKind::ServiceEntered, access_level);
                     crate::menu::run(machine, access).await;
+                    machine.events.record(EventKind::ServiceExited, 0);
                     crate::coin_acceptor::set_inhibited(false);
                 }
                 None => {
@@ -366,8 +392,9 @@ async fn handle(machine: &mut Machine, event: Event) {
 }
 
 /// Load what the machine knew before it was switched off.
-pub fn restore() -> (Settings, Counters, Journal) {
+pub fn restore() -> (Settings, Counters, Journal, EventLog) {
     let settings = nvram::load_settings();
     let (journal, counters) = Journal::open();
-    (settings, counters, journal)
+    let events = EventLog::open();
+    (settings, counters, journal, events)
 }

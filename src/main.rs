@@ -127,11 +127,12 @@ fn main() -> ! {
         Output::new(p.P1_7, Level::Low),
     );
 
-    let (settings, counters, journal) = vending::restore();
+    let (settings, counters, journal, events) = vending::restore();
     let machine = vending::Machine {
         settings,
         counters,
         journal,
+        events,
         hoppers,
         dispenser,
     };
