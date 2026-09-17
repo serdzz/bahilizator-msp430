@@ -9,8 +9,11 @@
 //! events are queued, the machine has a worse problem than a lost event, and a driver blocked on a
 //! full queue is a driver that stops watching its hardware.
 
+#[cfg(feature = "hw")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(feature = "hw")]
 use embassy_sync::channel::{Channel, Sender};
+#[cfg(feature = "hw")]
 use embassy_sync::signal::Signal;
 
 use crate::state::{Cash, IbuttonKey};
@@ -61,15 +64,19 @@ pub enum Event {
 }
 
 /// How many events may be queued before a driver has to wait.
+#[cfg(feature = "hw")]
 const EVENT_QUEUE: usize = 8;
 
 /// The one queue everything arrives on.
+#[cfg(feature = "hw")]
 static EVENTS: Channel<CriticalSectionRawMutex, Event, EVENT_QUEUE> = Channel::new();
 
 /// A handle the drivers use to report what they saw.
+#[cfg(feature = "hw")]
 pub type EventSender = Sender<'static, CriticalSectionRawMutex, Event, EVENT_QUEUE>;
 
 /// The sending end of the event queue.
+#[cfg(feature = "hw")]
 pub fn sender() -> EventSender {
     EVENTS.sender()
 }
@@ -78,6 +85,7 @@ pub fn sender() -> EventSender {
 ///
 /// Only the vending task should call this: events are consumed, so a second reader would take
 /// events the state machine never sees.
+#[cfg(feature = "hw")]
 pub async fn next() -> Event {
     EVENTS.receive().await
 }
@@ -87,9 +95,11 @@ pub async fn next() -> Event {
 /// A signal rather than a queue, because the display only ever needs to show the newest thing. If
 /// two screens are produced before either is drawn, drawing the older one first would be a flicker
 /// nobody asked for.
+#[cfg(feature = "hw")]
 pub static SCREEN: Signal<CriticalSectionRawMutex, crate::ui::Screen> = Signal::new();
 
 /// Ask the display to show `screen`.
+#[cfg(feature = "hw")]
 pub fn show(screen: crate::ui::Screen) {
     SCREEN.signal(screen);
 }

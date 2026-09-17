@@ -22,35 +22,19 @@
 //! 0xFFFF and needs the 20-bit addressing that Rust's `msp430-none-elf` target does not have. See
 //! `memory.x`.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(feature = "hw", no_std)]
+#![cfg_attr(feature = "hw", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 #![warn(missing_docs)]
 
+use bahilizator::config::{self, HopperPins};
+use bahilizator::hopper::Hopper;
+use bahilizator::{buttons, coin_acceptor, error, event, ibutton, lcd, state, ui, vending};
 use embassy_executor::Executor;
 use embassy_msp430::clock::{AclkSource, DcoFreq, Div};
 use embassy_msp430::gpio::{Flex, Input, Level, Output, Pull};
 use embassy_msp430::gpio;
 use static_cell::StaticCell;
-
-use crate::config::HopperPins;
-use crate::hopper::Hopper;
-
-mod buttons;
-mod coin_acceptor;
-mod config;
-mod cyrillic;
-mod error;
-mod event;
-mod hopper;
-mod ibutton;
-mod lcd;
-mod menu;
-mod nvram;
-mod report;
-mod state;
-mod ui;
-mod vending;
 
 use panic_msp430 as _;
 

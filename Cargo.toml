@@ -5,23 +5,51 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Shoe-cover dispenser firmware, on Embassy"
 
-[dependencies]
-embassy-msp430 = { path = "../embassy/embassy-msp430", features = ["msp430f2618", "time-driver-tb0"] }
-embassy-executor = { path = "../embassy/embassy-executor", features = ["platform-msp430", "executor-thread"] }
-embassy-time = { path = "../embassy/embassy-time", features = ["tick-hz-32_768"] }
-embassy-sync = { path = "../embassy/embassy-sync" }
-embassy-futures = { path = "../embassy/embassy-futures" }
+[lib]
+name = "bahilizator"
+path = "src/lib.rs"
 
-msp430-rt = "0.4.1"
-panic-msp430 = "0.4.0"
+[[bin]]
+name = "bahilizator"
+path = "src/main.rs"
+required-features = ["hw"]
+
+[features]
+default = []
+# Real MSP430F2618 hardware: embassy-msp430 GPIO/clock, on-chip flash NVRAM, 1-Wire bit-banging.
+# Only buildable for the msp430-none-elf target. The std simulator never enables this.
+hw = [
+    "dep:embassy-msp430",
+    "dep:embassy-executor",
+    "dep:embassy-time",
+    "dep:embassy-sync",
+    "dep:embassy-futures",
+    "dep:msp430-rt",
+    "dep:panic-msp430",
+]
+
+[dependencies]
+embassy-msp430 = { path = "../embassy/embassy-msp430", features = ["msp430f2618", "time-driver-tb0"], optional = true }
+embassy-executor = { path = "../embassy/embassy-executor", features = ["platform-msp430", "executor-thread"], optional = true }
+embassy-time = { path = "../embassy/embassy-time", features = ["tick-hz-32_768"], optional = true }
+embassy-sync = { path = "../embassy/embassy-sync", optional = true }
+embassy-futures = { path = "../embassy/embassy-futures", optional = true }
+
+msp430-rt = { version = "0.4.1", optional = true }
+panic-msp430 = { version = "0.4.0", optional = true }
 critical-section = "1.1"
 heapless = "0.9"
 bitflags = { version = "2", default-features = false }
 static_cell = "2"
 
 # MSP430 has no atomics at all, so anything that wants one has to go through the critical-section
-# implementation this crate provides.
+# implementation this crate provides. On std this pulls in critical-section's std backend instead.
 portable-atomic = { version = "1", features = ["critical-section"] }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# The std build needs a real critical-section implementation; embassy-msp430 (hw only) supplies its
+# own on MSP430. On the desktop, critical-section's own std feature (a global mutex) does the job.
+critical-section = { version = "1.1", features = ["std"] }
 
 [profile.dev]
 codegen-units = 1

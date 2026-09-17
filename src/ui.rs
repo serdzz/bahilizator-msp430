@@ -7,12 +7,17 @@
 
 use core::fmt::Write;
 
+#[cfg(feature = "hw")]
 use embassy_time::{Duration, Timer};
 use heapless::String;
 
-use crate::config::{LCD_COLUMNS, LCD_ROWS};
+use crate::config::LCD_COLUMNS;
+#[cfg(feature = "hw")]
+use crate::config::LCD_ROWS;
 use crate::error::Errors;
+#[cfg(feature = "hw")]
 use crate::event::SCREEN;
+#[cfg(feature = "hw")]
 use crate::lcd::Lcd;
 use crate::state::{Cash, Currency, Language};
 
@@ -139,6 +144,7 @@ pub fn render(screen: &Screen, language: Language) -> (Row, Row) {
 ///
 /// Only the newest screen is drawn. If two arrive between redraws the older one is dropped rather
 /// than queued, because showing it first would be a flicker that told the customer nothing.
+#[cfg(feature = "hw")]
 pub async fn run(mut lcd: Lcd<'_>, language: Language) {
     let mut shown: Option<(Row, Row)> = None;
 
@@ -164,6 +170,7 @@ pub async fn run(mut lcd: Lcd<'_>, language: Language) {
 ///
 /// The wait is here rather than in the caller so that a message with a dwell time cannot be
 /// silently replaced a millisecond after it appears.
+#[cfg(feature = "hw")]
 pub async fn show_for(screen: Screen, seconds: u8) {
     crate::event::show(screen);
     Timer::after(Duration::from_secs(seconds as u64)).await;

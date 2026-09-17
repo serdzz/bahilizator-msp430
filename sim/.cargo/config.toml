@@ -1,0 +1,10 @@
+[build]
+# Override the parent crate's `target = "msp430-none-elf"` — the simulator is a std, host binary.
+target = "x86_64-unknown-linux-gnu"
+
+[unstable]
+# The parent .cargo/config.toml sets `build-std = ["core"]` for the tier-3 msp430 target. Cargo
+# merges config files up the directory tree, so without this override that setting would leak into
+# the simulator's std build and try to rebuild `core` against a std target, which breaks the build
+# with duplicate lang item errors. An empty list turns build-std off again for this directory.
+build-std = []

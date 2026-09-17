@@ -22,9 +22,15 @@ rustflags = [
 # asked for explicitly: `$0` is that path.
 runner = ["sh", "-c", "mspdebug -q tilib \"prog $0\" reset"]
 
-[build]
-target = "msp430-none-elf"
-
-[unstable]
-# msp430-none-elf is a tier 3 target: rustup has no prebuilt `core` for it.
-build-std = ["core"]
+# NOTE: this used to also set `[build] target = "msp430-none-elf"` and `[unstable] build-std =
+# ["core"]` at the top level. Both were moved out, because — unlike `[target.msp430-none-elf]`
+# above — those two keys are *not* scoped to one target: cargo applies them to every build cargo
+# runs from this directory or below, including the std desktop simulator in `sim/`, which does not
+# want its own `core` rebuilt from source against a hosted target (that produces "duplicate lang
+# item" errors from two copies of `core` in the same build).
+#
+# The MSP430 hardware build now asks for both explicitly on the command line instead:
+#
+#   cargo +nightly build --release --features hw --target msp430-none-elf -Z build-std=core
+#
+# See README.md.

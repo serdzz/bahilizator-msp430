@@ -9,18 +9,28 @@
 //! While the menu is open the machine is not selling. It stops taking coins on the way in and takes
 //! them again on the way out.
 
+#[cfg(feature = "hw")]
 use core::fmt::Write;
 
+#[cfg(feature = "hw")]
 use embassy_futures::select::{Either, select};
+#[cfg(feature = "hw")]
 use embassy_time::{Duration, Timer};
 use heapless::String;
 
+#[cfg(feature = "hw")]
 use crate::config::HOPPER_COUNT;
+#[cfg(feature = "hw")]
 use crate::event::{Button, Event};
+#[cfg(feature = "hw")]
 use crate::nvram;
+#[cfg(feature = "hw")]
 use crate::report;
-use crate::state::{IbuttonKey, Level, Settings};
+#[cfg(feature = "hw")]
+use crate::state::Level;
+use crate::state::{IbuttonKey, Settings};
 use crate::ui::{Row, Screen};
+#[cfg(feature = "hw")]
 use crate::vending::Machine;
 
 /// How far into the machine a key lets somebody.
@@ -51,6 +61,7 @@ impl Access {
 }
 
 /// One line of the menu.
+#[cfg(feature = "hw")]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum Item {
     /// Show what has been taken and sold.
@@ -69,6 +80,7 @@ enum Item {
     ClearPeriod,
 }
 
+#[cfg(feature = "hw")]
 impl Item {
     /// The label to show.
     fn label(self) -> &'static str {
@@ -99,6 +111,7 @@ impl Item {
 }
 
 /// Every item, in the order they appear.
+#[cfg(feature = "hw")]
 const ITEMS: [Item; 8] = [
     Item::Accounting,
     Item::State,
@@ -114,6 +127,7 @@ const ITEMS: [Item; 8] = [
 ///
 /// Returns `None` on the timeout, which every screen below treats as "leave things as they were".
 /// An engineer who walks away from an open menu must not leave the machine out of service.
+#[cfg(feature = "hw")]
 async fn button(settings: &Settings) -> Option<Button> {
     let limit = Duration::from_secs(settings.menu_exit_timeout as u64);
     loop {
@@ -132,6 +146,7 @@ async fn button(settings: &Settings) -> Option<Button> {
 ///
 /// Reports are longer than the display, so they are paged rather than scrolled: two rows at a time,
 /// advanced by any button. Scrolling would need a timer and would move under the reader's eye.
+#[cfg(feature = "hw")]
 async fn show_report(text: &report::Report, settings: &Settings) {
     let mut lines = text.lines();
     loop {
@@ -154,6 +169,7 @@ async fn show_report(text: &report::Report, settings: &Settings) {
 ///
 /// Returns the new value, or `None` if the engineer cancelled or walked away. The step is a
 /// parameter because refilling a hopper in ones would take all afternoon.
+#[cfg(feature = "hw")]
 async fn edit(
     title: &str,
     mut value: u32,
@@ -178,6 +194,7 @@ async fn edit(
 }
 
 /// Run one menu item.
+#[cfg(feature = "hw")]
 async fn run_item(machine: &mut Machine, item: Item) {
     match item {
         Item::Accounting => {
@@ -245,6 +262,7 @@ async fn run_item(machine: &mut Machine, item: Item) {
 }
 
 /// Open the menu at `access` and stay in it until the engineer leaves or stops pressing things.
+#[cfg(feature = "hw")]
 pub async fn run(machine: &mut Machine, access: Access) {
     let mut cursor = 0usize;
 

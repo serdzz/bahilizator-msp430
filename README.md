@@ -60,8 +60,14 @@ Needs a nightly toolchain (`msp430-none-elf` is tier 3, so `core` is built from 
 `R_MSP430_SYM_DIFF` relocation that `msp430-rt`'s startup code contains.
 
 ```sh
-cargo build --release
+cargo build --release --features hw --target msp430-none-elf -Z build-std=core
 ```
+
+The `--features hw` pulls in `embassy-msp430`, `embassy-executor`, `msp430-rt`, `panic-msp430` and
+the other MSP430-only dependencies (see "Two ways to build this crate" below); the target and
+build-std flags used to live in `.cargo/config.toml`, but were moved onto the command line because
+they cannot be scoped to one target the way linker flags can, and having them apply unconditionally
+broke `cargo build` for the desktop simulator (see `SIM.md`).
 
 The toolchain is TI's [MSP430-GCC], not a Homebrew package. Put its `bin` on `PATH`. The macOS
 build is x86_64 only, so on Apple silicon it runs under Rosetta.
@@ -84,10 +90,37 @@ metal target with `-nodefaultlibs`:
 With an MSP-FET or an MSP-FET430UIF and `mspdebug`:
 
 ```sh
-cargo run --release
+cargo run --release --features hw --target msp430-none-elf -Z build-std=core
 ```
 
 which runs `mspdebug tilib "prog <elf>" reset`.
+
+## Playing with it on a desktop, no board required
+
+`sim/` is a separate std binary that reimplements the same vending logic, service menu and iButton
+access levels as an interactive terminal program — a 16×2 LCD rendered as text, arrow keys and
+Enter/`\` for the four buttons, `o`/`s`/`c` for iButton roles, `1`–`6` for coins, `A`/`S`/`D` for
+hopper and dispenser payouts. See **[SIM.md](SIM.md)** for the full keymap, what it reuses from
+this crate unchanged versus reimplements, and known limitations.
+
+```sh
+cd sim
+cargo run --release --bin sim
+```
+
+## Two ways to build this crate
+
+This repository now produces two binaries from one `Cargo.toml` (`bahilizator`) plus a workspace
+member (`sim`):
+
+* `cargo build --release --features hw --target msp430-none-elf -Z build-std=core` — the real
+  firmware, unchanged in behaviour from before this split, for the MSP430F2618.
+* `cd sim && cargo run --release --bin sim` — the desktop simulator above, on the host.
+
+The split lives in `src/lib.rs`: modules that touch real hardware (`buttons`, `coin_acceptor`,
+`hopper`, `ibutton`, `nvram`, `vending`, `lcd`) are behind `#[cfg(feature = "hw")]` and only compile
+for the MSP430 build; `config`, `state`, `error`, `event`, `ui`, `report` and the pure parts of
+`menu` (`Access`) are hardware-agnostic and compiled into both.
 
 ## Room
 

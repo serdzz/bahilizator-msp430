@@ -1,0 +1,14 @@
+[package]
+name = "sim"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Desktop terminal simulator for the bahilizator firmware"
+
+[[bin]]
+name = "sim"
+path = "src/main.rs"
+
+[dependencies]
+bahilizator = { path = "..", default-features = false }
+crossterm = "0.28"
