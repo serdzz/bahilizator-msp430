@@ -432,7 +432,10 @@ impl Journal {
 // ---------------------------------------------------------------------------------------------
 
 /// How many bytes a serialised [`Settings`] takes. Comfortably inside one segment.
-const SETTINGS_LEN: usize = 160;
+///
+/// Bumped from 160 to make room for `coin_acceptor.pulse_mode` (§1 of `PORT_AUDIT.md`), one extra
+/// byte over the 158 actually used by the format above — headroom against the next field added.
+const SETTINGS_LEN: usize = 168;
 
 fn put_hopper(c: &mut Cursor, h: &HopperSettings) {
     c.u8(h.enabled as u8);
@@ -481,6 +484,7 @@ pub fn save_settings(s: &Settings) {
     for value in &s.coin_acceptor.channel_values {
         c.u32(*value);
     }
+    c.u8(s.coin_acceptor.pulse_mode as u8);
     for hopper in &s.coin_hoppers {
         put_hopper(&mut c, hopper);
     }
@@ -532,10 +536,12 @@ pub fn load_settings() -> Settings {
         for value in channel_values.iter_mut() {
             *value = r.u32();
         }
+        let pulse_mode = r.u8() != 0;
         CoinAcceptorSettings {
             enabled,
             channel_mask,
             channel_values,
+            pulse_mode,
         }
     };
     let mut coin_hoppers = [HopperSettings::default(); HOPPER_COUNT];
