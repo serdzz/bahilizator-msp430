@@ -141,7 +141,7 @@ impl Machine {
                 // A dispenser that will not dispense stops the machine: there is nothing to sell.
                 error::raise(match e {
                     HopperError::Jammed => Errors::ITEM_DISPENSER,
-                    HopperError::Faulted => Errors::ITEM_DISPENSER,
+                    HopperError::Faulted { .. } => Errors::ITEM_DISPENSER,
                 });
                 self.persist();
                 return;

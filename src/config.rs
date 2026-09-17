@@ -137,12 +137,32 @@ pub const DEBOUNCE_MS: u64 = 50;
 /// How long a hopper may run without its coin sensor pulsing before it is called jammed.
 pub const HOPPER_COIN_TIMEOUT_MS: u64 = 2_000;
 
-/// How long the coin sensor pulse is expected to last, at the extremes.
+/// How long the item dispenser's coin/unit sensor pulse is expected to last, at the extremes.
 ///
-/// Anything shorter is noise; anything longer is a coin that has stuck in front of the sensor.
-pub const HOPPER_PULSE_MIN_MS: u64 = 5;
+/// Anything shorter is noise; anything longer is a unit that has stuck in front of the sensor.
+/// Taken from the C original's `ITEM_HOPPER_COIN_PULSE_MIN/MAX_TIME` (`hopper.h:10-11`), which are
+/// specific to hopper A (the item dispenser) and different from the coin hoppers' own timing below.
+pub const ITEM_HOPPER_PULSE_MIN_MS: u64 = 5;
+/// See [`ITEM_HOPPER_PULSE_MIN_MS`].
+pub const ITEM_HOPPER_PULSE_MAX_MS: u64 = 500;
+
+/// How long a coin hopper's (B/C) coin sensor pulse is expected to last, at the extremes.
+///
+/// Taken from the C original's `HOPPER_COIN_PULSE_MIN/MAX_TIME` (`hopper.h:4-5`) — a narrower window
+/// than the item dispenser's, because a coin hopper pays out coins, not shoe covers, and a pulse
+/// outside 10-70 ms on this hardware is noise or a jam, not a legitimate payout. The Rust port
+/// previously reused [`ITEM_HOPPER_PULSE_MIN_MS`]/[`ITEM_HOPPER_PULSE_MAX_MS`] here, which would
+/// have accepted a spurious 200 ms pulse as a real coin (PORT_AUDIT.md §2).
+pub const HOPPER_PULSE_MIN_MS: u64 = 10;
 /// See [`HOPPER_PULSE_MIN_MS`].
-pub const HOPPER_PULSE_MAX_MS: u64 = 500;
+pub const HOPPER_PULSE_MAX_MS: u64 = 70;
+
+/// How long a hopper's error line may stay released between error pulses before the burst is taken
+/// to have ended and the accumulated pulse count reported as a fault code.
+///
+/// Taken directly from the C original's `PAUSE_BETWEEN_ERRER_CODES` (`hopper.h:6`; the misspelling
+/// is the original's).
+pub const HOPPER_ERROR_PULSE_GAP_MS: u64 = 90;
 
 // ---------------------------------------------------------------------------------------------
 // 1-Wire — port 2
